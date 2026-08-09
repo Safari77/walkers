@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.58.0
+
+* `egui` updated to 0.36.
+* MSRV increased to 1.95.
+
+## 0.57.0
+
 * An empty `source_layer` now matches features from all layers of a vector tile.
 * Fix crash when zooming out close to zoom 0 with tile sources serving tiles larger than 256px.
 * Support `line-dasharray` in vector tile styles.
@@ -11,8 +18,6 @@ All notable changes to this project will be documented in this file.
 * `Map` now consumes the scroll it acts upon, so that parent containers don't act on it as well.
 * Dependencies updated, including `kml` 0.14 and `rstar` 0.13.
 * The unused `getrandom` dependency was removed.
-* `egui` updated to 0.36.
-* MSRV increased to 1.95.
 
 ## 0.56.0
 
