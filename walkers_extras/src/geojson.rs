@@ -7,7 +7,9 @@ use geojson::{Feature as GeoJsonFeature, GeoJson};
 use log::warn;
 use rstar::primitives::{GeomWithData, Rectangle};
 use rstar::{AABB, RTree};
-use walkers::{Context, Layer, Position, Projector, Style, render_line};
+use walkers::{
+    Context, Filter, Layer, Position, Projector, Style, place_texts, render_line, render_symbol,
+};
 
 struct Feature {
     geometry: walkers::Geometry<f32>,
@@ -53,23 +55,25 @@ impl GeoJsonLayer {
         let viewport = viewport(projector, ui.clip_rect());
 
         let mut shapes = Vec::new();
+        let mut texts = Vec::new();
 
         for layer in &self.style.layers {
             match layer {
                 Layer::Line { paint, filter, .. } => {
-                    for entry in self.rtree.locate_in_envelope_intersecting(viewport) {
-                        let properties = entry.data.properties.clone();
-                        let context =
-                            Context::new("geometry_type/TODO".to_string(), properties, zoom);
-
-                        if let Some(filter) = filter
-                            && !filter.matches(&context)
-                        {
-                            continue;
-                        }
-
-                        let projected = project_geometry(&entry.data.geometry, projector);
+                    for (geometry, context) in self.features(viewport, filter.as_ref(), zoom) {
+                        let projected = project_geometry(geometry, projector);
                         let _ = render_line(&projected, &context, &mut shapes, paint);
+                    }
+                }
+                Layer::Symbol {
+                    layout,
+                    paint,
+                    filter,
+                    ..
+                } => {
+                    for (geometry, context) in self.features(viewport, filter.as_ref(), zoom) {
+                        let projected = project_geometry(geometry, projector);
+                        let _ = render_symbol(&projected, &context, &mut texts, layout, paint);
                     }
                 }
                 other => {
@@ -78,17 +82,34 @@ impl GeoJsonLayer {
             }
         }
 
+        // Geometry first, then the labels on top of it.
+        let texts = place_texts(texts, ui.ctx());
         let painter = ui.painter();
-        for shape in shapes {
-            match shape {
-                walkers::ShapeOrText::Shape(shape) => {
-                    painter.add(shape);
+        painter.extend(shapes);
+        painter.extend(texts);
+    }
+
+    /// Features in the viewport which the layer's filter lets through.
+    fn features<'a>(
+        &'a self,
+        viewport: AABB<[f64; 2]>,
+        filter: Option<&'a Filter>,
+        zoom: u8,
+    ) -> impl Iterator<Item = (&'a walkers::Geometry<f32>, Context)> + 'a {
+        self.rtree
+            .locate_in_envelope_intersecting(viewport)
+            .filter_map(move |entry| {
+                let context = Context::new(
+                    "geometry_type/TODO".to_string(),
+                    entry.data.properties.clone(),
+                    zoom,
+                );
+
+                match filter {
+                    Some(filter) if !filter.matches(&context) => None,
+                    _ => Some((&entry.data.geometry, context)),
                 }
-                walkers::ShapeOrText::Text(_) => {
-                    // Text rendering not yet supported for GeoJSON layers.
-                }
-            }
-        }
+            })
     }
 }
 

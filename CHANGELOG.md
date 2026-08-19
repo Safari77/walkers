@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 * Fix tile sources with tiles smaller than 256px being rendered as if they were 256px.
+* `GeoJsonLayer` now renders `symbol` layers, including their text labels.
+* Fix `fill` layers not rendering features made of a single polygon.
+* `source_layer` is now a `SourceLayer`, which can name several layers of a vector tile instead
+  of one. It still takes a plain name, and an empty one still matches all of them.
+* `line-width` is now in screen pixels, so lines are thicker than before.
+* Labels are placed against the whole map rather than one tile at a time, so they no longer
+  repeat or get cut off at tile boundaries. They are also drawn above every layer.
+* A street split into many features is named once rather than once per feature.
 
 ## 0.58.0
 

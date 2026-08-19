@@ -1,14 +1,10 @@
 #[cfg(feature = "mvt")]
-use crate::mvt::{self, ShapeOrText};
+use crate::mvt;
 #[cfg(feature = "mvt")]
-use crate::text::Text;
-#[cfg(feature = "mvt")]
-use crate::text::{OccupiedAreas, OrientedRect};
+use crate::render;
 
 use egui::{Color32, Context, Mesh, Rect, Vec2, pos2};
 use egui::{ColorImage, TextureHandle};
-#[cfg(feature = "mvt")]
-use egui::{FontId, Shape};
 use image::{ImageError, ImageReader};
 use std::collections::HashSet;
 use thiserror::Error;
@@ -112,15 +108,24 @@ pub trait Tiles {
 pub enum Tile {
     Raster(TextureHandle),
     #[cfg(feature = "mvt")]
-    Vector(Vec<ShapeOrText>),
+    Vector {
+        shapes: Vec<egui::Shape>,
+        texts: Vec<crate::text::Text>,
+    },
 }
 
 impl Tile {
     /// Create a tile from raw image data. The data can be either raster image (PNG, JPEG, etc.)
     /// or vector tile (MVT) if the `mvt` feature is enabled.
-    pub fn new(image: &[u8], style: &Style, zoom: u8, ctx: &Context) -> Result<Self, TileError> {
+    pub fn new(
+        image: &[u8],
+        style: &Style,
+        zoom: u8,
+        tile_size: u32,
+        ctx: &Context,
+    ) -> Result<Self, TileError> {
         #[cfg(not(feature = "mvt"))]
-        let _ = (style, zoom);
+        let _ = (style, zoom, tile_size);
 
         if image.is_empty() {
             return Err(TileError::Empty);
@@ -141,7 +146,7 @@ impl Tile {
             #[cfg(feature = "mvt")]
             {
                 log::debug!("Trying to decode tile as MVT vector tile.");
-                Ok(Self::from_mvt(image, style, zoom)?)
+                Ok(Self::from_mvt(image, style, zoom, tile_size)?)
             }
             #[cfg(not(feature = "mvt"))]
             {
@@ -151,8 +156,14 @@ impl Tile {
     }
 
     #[cfg(feature = "mvt")]
-    pub fn from_mvt(data: &[u8], style: &Style, zoom: u8) -> Result<Self, TileError> {
-        Ok(Self::Vector(mvt::render(data, style, zoom)?))
+    pub fn from_mvt(
+        data: &[u8],
+        style: &Style,
+        zoom: u8,
+        tile_size: u32,
+    ) -> Result<Self, TileError> {
+        let (shapes, texts) = mvt::render(data, style, zoom, tile_size)?;
+        Ok(Self::Vector { shapes, texts })
     }
 
     /// Load the texture from egui's [`ColorImage`].
@@ -162,7 +173,18 @@ impl Tile {
 
     /// Draw the tile on the given `rect`. The `uv` parameter defines which part of the tile
     /// should be drawn on the `rect`.
-    fn draw(&self, painter: &egui::Painter, rect: Rect, uv: Rect, transparency: f32) {
+    fn draw(
+        &self,
+        painter: &egui::Painter,
+        rect: Rect,
+        uv: Rect,
+        transparency: f32,
+        tile_size: u32,
+        texts: &mut Texts,
+    ) {
+        #[cfg(not(feature = "mvt"))]
+        let _ = (tile_size, texts);
+
         match self {
             Tile::Raster(texture_handle) => {
                 let mut mesh = Mesh::with_texture(texture_handle.id());
@@ -170,65 +192,42 @@ impl Tile {
                 painter.add(egui::Shape::mesh(mesh));
             }
             #[cfg(feature = "mvt")]
-            Tile::Vector(shapes) => {
+            Tile::Vector {
+                shapes,
+                texts: from_tile,
+            } => {
                 // Renderer needs to work on the full tile, before it was clipped with `uv`...
                 let full_rect = full_rect_of_clipped_tile(rect, uv);
 
                 // ...and then it can be clipped to the `rect`.
                 let painter = painter.with_clip_rect(rect);
 
-                let mut occupied_text_areas = OccupiedAreas::new();
-
-                // Need to collect it to avoid deadlock caused by `Painter::extend` and `fonts_mut`.
-                let shapes: Vec<_> = mvt::transformed(shapes, full_rect)
-                    .into_iter()
-                    .map(|shape_or_text| match shape_or_text {
-                        ShapeOrText::Shape(shape) => shape,
-                        ShapeOrText::Text(text) => {
-                            self.draw_text(text, painter.ctx(), &mut occupied_text_areas)
-                        }
-                    })
-                    .collect();
-
-                painter.extend(shapes);
+                let transform = mvt::transform_onto(full_rect, tile_size);
+                painter.extend(render::transformed_shapes(shapes, transform));
+                texts
+                    .texts
+                    .extend(render::transformed_texts(from_tile, transform));
             }
         }
     }
+}
 
+/// Text gathered from the tiles of every layer, so that it can be placed against the whole
+/// viewport rather than one tile at a time.
+#[derive(Default)]
+pub(crate) struct Texts {
     #[cfg(feature = "mvt")]
-    fn draw_text(
-        &self,
-        text: Text,
-        ctx: &Context,
-        occupied_text_areas: &mut OccupiedAreas,
-    ) -> Shape {
-        use egui::epaint::TextShape;
+    texts: Vec<crate::text::Text>,
+}
 
-        let mut layout_job = egui::text::LayoutJob::default();
-
-        layout_job.append(
-            &text.text,
-            0.0,
-            egui::TextFormat {
-                font_id: FontId::proportional(text.font_size),
-                color: text.text_color,
-                background: text.background_color,
-                ..Default::default()
-            },
-        );
-
-        let galley = ctx.fonts_mut(|fonts| fonts.layout_job(layout_job));
-
-        let area = OrientedRect::new(text.position, text.angle, galley.size());
-        let top_left = area.top_left();
-
-        if occupied_text_areas.try_occupy(area) {
-            TextShape::new(top_left, galley, text.text_color)
-                .with_angle(text.angle)
-                .into()
-        } else {
-            Shape::Noop
-        }
+impl Texts {
+    /// Lay them out, drop the ones which would overlap, and paint what is left above every
+    /// layer.
+    pub(crate) fn paint(self, painter: &egui::Painter) {
+        #[cfg(feature = "mvt")]
+        painter.extend(crate::text::place_texts(self.texts, painter.ctx()));
+        #[cfg(not(feature = "mvt"))]
+        let _ = painter;
     }
 }
 
@@ -250,29 +249,45 @@ pub(crate) fn draw_tiles(
     zoom: Zoom,
     tiles: &mut dyn Tiles,
     transparency: f32,
+    texts: &mut Texts,
 ) {
     let mut meshes = Default::default();
     flood_fill_tiles(
-        painter,
+        &Spread {
+            painter,
+            map_center_projected_position: project(map_center, zoom.into()),
+            zoom: zoom.into(),
+            transparency,
+        },
         tile_id(map_center, zoom.round(), tiles.tile_size()),
-        project(map_center, zoom.into()),
-        zoom.into(),
         tiles,
-        transparency,
         &mut meshes,
+        texts,
     );
+}
+
+/// What stays the same as the fill spreads from one tile to the next.
+struct Spread<'a> {
+    painter: &'a egui::Painter,
+    map_center_projected_position: Pixels,
+    zoom: f64,
+    transparency: f32,
 }
 
 /// Use simple [flood fill algorithm](https://en.wikipedia.org/wiki/Flood_fill) to draw tiles on the map.
 fn flood_fill_tiles(
-    painter: &egui::Painter,
+    spread: &Spread,
     tile_id: TileId,
-    map_center_projected_position: Pixels,
-    zoom: f64,
     tiles: &mut dyn Tiles,
-    transparency: f32,
     meshes: &mut HashSet<TileId>,
+    texts: &mut Texts,
 ) {
+    let Spread {
+        painter,
+        map_center_projected_position,
+        zoom,
+        transparency,
+    } = *spread;
     // The tile's zoom level can differ from the map's: it is rounded to an integer, adjusted
     // for sources with tiles larger than 256px, and clamped at 0. Scale the tile so that it
     // covers the right amount of the map regardless.
@@ -292,6 +307,8 @@ fn flood_fill_tiles(
                 rect(tile_screen_position, corrected_tile_size),
                 tile.uv,
                 transparency,
+                tiles.tile_size(),
+                texts,
             )
         }
 
@@ -304,15 +321,7 @@ fn flood_fill_tiles(
         .iter()
         .flatten()
         {
-            flood_fill_tiles(
-                painter,
-                *next_tile_id,
-                map_center_projected_position,
-                zoom,
-                tiles,
-                transparency,
-                meshes,
-            );
+            flood_fill_tiles(spread, *next_tile_id, tiles, meshes, texts);
         }
     }
 }
@@ -367,17 +376,22 @@ pub(crate) fn rect(screen_position: Vec2, tile_size: f64) -> Rect {
 pub struct EguiTileFactory {
     egui_ctx: Context,
     style: Style,
+    tile_size: u32,
 }
 
 impl EguiTileFactory {
-    pub fn new(egui_ctx: Context, style: Style) -> Self {
-        Self { egui_ctx, style }
+    pub fn new(egui_ctx: Context, style: Style, tile_size: u32) -> Self {
+        Self {
+            egui_ctx,
+            style,
+            tile_size,
+        }
     }
 }
 
 impl TileFactory for EguiTileFactory {
     fn create_tile(&self, data: &bytes::Bytes, zoom: u8) -> Result<Tile, TileError> {
-        Tile::new(data, &self.style, zoom, &self.egui_ctx)
+        Tile::new(data, &self.style, zoom, self.tile_size, &self.egui_ctx)
     }
 }
 
@@ -440,6 +454,7 @@ mod tests {
             Zoom::try_from(zoom).unwrap(),
             &mut tiles,
             1.0,
+            &mut Texts::default(),
         );
 
         tiles.requested
@@ -521,6 +536,102 @@ mod tests {
                 y: 0,
                 zoom: 1
             })
+        );
+    }
+
+    /// A source whose every tile carries the same label at both its left and right edge, the
+    /// way vector tiles repeat features which fall near a boundary. Positions are in the
+    /// pixels of a tile, which is what a rendered tile holds.
+    #[cfg(feature = "mvt")]
+    struct LabelAtBothEdges;
+
+    #[cfg(feature = "mvt")]
+    impl Tiles for LabelAtBothEdges {
+        fn at(&mut self, _tile_id: TileId) -> Option<TilePiece> {
+            let label = |x: f32| {
+                crate::text::Text::new(
+                    pos2(x, TILE_SIZE as f32 / 2.),
+                    "Szczepankowice".to_string(),
+                    12.,
+                    Color32::BLACK,
+                    0.,
+                )
+            };
+
+            Some(TilePiece::new(
+                Tile::Vector {
+                    shapes: Vec::new(),
+                    texts: vec![label(0.), label(TILE_SIZE as f32)],
+                },
+                Rect::from_min_max(pos2(0., 0.), pos2(1., 1.)),
+            ))
+        }
+
+        fn attribution(&self) -> Attribution {
+            Attribution {
+                text: "",
+                url: "",
+                logo_light: None,
+                logo_dark: None,
+            }
+        }
+
+        fn tile_size(&self) -> u32 {
+            TILE_SIZE
+        }
+    }
+
+    /// The same label arriving from two neighbouring tiles should be drawn once. Before labels
+    /// were gathered across tiles, each tile placed its own copy.
+    #[cfg(feature = "mvt")]
+    #[test]
+    fn a_label_shared_by_two_tiles_is_placed_once() {
+        let ctx = Context::default();
+        // Fonts only exist once a pass has been run.
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+
+        let painter = egui::Painter::new(
+            ctx.to_owned(),
+            egui::LayerId::debug(),
+            Rect::from_min_size(pos2(0., 0.), Vec2::splat(TILE_SIZE as f32 * 2.)),
+        );
+
+        let mut texts = Texts::default();
+        #[allow(clippy::unwrap_used)]
+        draw_tiles(
+            &painter,
+            lon_lat(21.00027, 52.26470),
+            Zoom::try_from(16.).unwrap(),
+            &mut LabelAtBothEdges,
+            1.0,
+            &mut texts,
+        );
+
+        let gathered = texts.texts.len();
+        let positions: std::collections::HashSet<_> = texts
+            .texts
+            .iter()
+            .map(|text| (text.position.x as i32, text.position.y as i32))
+            .collect();
+
+        // Neighbouring tiles put a label on the very same spot.
+        assert!(
+            gathered > positions.len(),
+            "{gathered} labels landed on {} distinct spots, so none were shared",
+            positions.len()
+        );
+
+        let placed = crate::text::place_texts(texts.texts, &ctx)
+            .into_iter()
+            .filter(|shape| !matches!(shape, egui::Shape::Noop))
+            .count();
+
+        assert_eq!(
+            placed,
+            positions.len(),
+            "expected one label per spot, got {placed} for {} spots",
+            positions.len()
         );
     }
 }

@@ -8,7 +8,7 @@ use std::io;
 
 use egui::{Button, Context, DragPanButtons, OpenUrl, Rect, Vec2};
 use tiles::{TilesKind, providers};
-use walkers::{Color, Filter, Float, Layer, Map, MapMemory, Paint, Style, json};
+use walkers::{Color, Filter, Float, Layer, Layout, Map, MapMemory, Paint, Style, json};
 use walkers_extras::GeoJsonLayer;
 
 use crate::tiles::Providers;
@@ -132,14 +132,16 @@ fn geojson_layers() -> Result<Vec<GeoJsonLayer>, io::Error> {
         if path.extension().and_then(|s| s.to_str()) == Some("geojson") {
             let content = fs::read_to_string(path)?;
             let geojson = content.parse().unwrap();
-            layers.push(GeoJsonLayer::new(geojson, trails_style()));
+            layers.push(GeoJsonLayer::new(geojson, hiking_style()));
         }
     }
 
     Ok(layers)
 }
 
-fn trails_style() -> Style {
+/// One style for every `.geojson` found, with filters picking what each layer applies to.
+/// See `just overpass-trails-dolnoslaskie` and `just overpass-peaks-dolnoslaskie`.
+fn hiking_style() -> Style {
     let width = |factor| {
         Float(json!([
             "interpolate",
@@ -155,7 +157,7 @@ fn trails_style() -> Style {
     Style {
         layers: vec![
             Layer::Line {
-                source_layer: "".to_string(),
+                source_layer: "".into(),
                 filter: Some(Filter(json!([
                     "any",
                     ["==", ["get", "colour"], "red"],
@@ -169,7 +171,7 @@ fn trails_style() -> Style {
                 },
             },
             Layer::Line {
-                source_layer: "".to_string(),
+                source_layer: "".into(),
                 filter: Some(Filter(json!([
                     "any",
                     ["==", ["get", "colour"], "yellow"],
@@ -182,7 +184,7 @@ fn trails_style() -> Style {
                 },
             },
             Layer::Line {
-                source_layer: "".to_string(),
+                source_layer: "".into(),
                 filter: Some(Filter(json!(["==", ["get", "colour"], "red"]))),
                 paint: Paint {
                     line_color: Some(Color(json!("#7b0000"))),
@@ -191,7 +193,7 @@ fn trails_style() -> Style {
                 },
             },
             Layer::Line {
-                source_layer: "".to_string(),
+                source_layer: "".into(),
                 filter: Some(Filter(json!(["==", ["get", "colour"], "blue"]))),
                 paint: Paint {
                     line_color: Some(Color(json!("#0028ac"))),
@@ -200,7 +202,7 @@ fn trails_style() -> Style {
                 },
             },
             Layer::Line {
-                source_layer: "".to_string(),
+                source_layer: "".into(),
                 filter: Some(Filter(json!(["==", ["get", "colour"], "green"]))),
                 paint: Paint {
                     line_color: Some(Color(json!("#005d09"))),
@@ -209,7 +211,7 @@ fn trails_style() -> Style {
                 },
             },
             Layer::Line {
-                source_layer: "".to_string(),
+                source_layer: "".into(),
                 filter: Some(Filter(json!(["==", ["get", "colour"], "yellow"]))),
                 paint: Paint {
                     line_color: Some(Color(json!("#bbbb00"))),
@@ -218,13 +220,33 @@ fn trails_style() -> Style {
                 },
             },
             Layer::Line {
-                source_layer: "".to_string(),
+                source_layer: "".into(),
                 filter: Some(Filter(json!(["==", ["get", "colour"], "black"]))),
                 paint: Paint {
                     line_color: Some(Color(json!("#000000"))),
                     line_width: Some(width(0.2)),
                     ..Default::default()
                 },
+            },
+            Layer::Symbol {
+                source_layer: "".into(),
+                filter: Some(Filter(json!(["==", ["get", "natural"], "peak"]))),
+                layout: Layout {
+                    text_field: Some(json!(["get", "name"])),
+                    text_size: Some(Float(json!([
+                        "interpolate",
+                        ["linear"],
+                        ["zoom"],
+                        8.0,
+                        9.0,
+                        16.0,
+                        16.0
+                    ]))),
+                },
+                paint: Some(Paint {
+                    text_color: Some(Color(json!("#3d2b1f"))),
+                    ..Default::default()
+                }),
             },
         ],
     }

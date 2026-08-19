@@ -1,0 +1,1558 @@
+//! A basemap for OpenFreeMap and Protomaps, or anything else following their schemas.
+
+use super::{
+    Color, Dasharray, Filter, Float, Layer, Layout, Paint, SourceLayer, Style, Value, json,
+    linear_zoom_interpolation,
+};
+
+/// Which vector tile schema the tiles follow.
+#[derive(Clone, Copy)]
+struct Schema {
+    pub earth: &'static str,
+    pub landuse: &'static [&'static str],
+    pub water: &'static str,
+    pub water_labels: &'static [&'static str],
+    pub waterway: &'static str,
+    pub roads: &'static str,
+    pub road_labels: &'static str,
+    pub buildings: &'static str,
+    pub places: &'static str,
+    pub pois: &'static str,
+    pub peaks: &'static [&'static str],
+    pub boundaries: &'static str,
+    pub kind: &'static str,
+    pub kind_detail: &'static str,
+    pub admin_level: &'static str,
+    pub settlements: Settlements,
+    pub brunnel: Option<&'static str>,
+    pub link: &'static str,
+}
+
+/// How a schema tells a city from a village.
+#[derive(Clone, Copy)]
+enum Settlements {
+    /// Protomaps files every settlement under the one `locality` kind and separates them by
+    /// `population_rank`, which counts *up* with population.
+    ByPopulationRank,
+
+    /// OpenMapTiles keeps `city`, `town` and `village` apart as classes. Its `rank` is a
+    /// placement priority counting *down* with importance — Berlin is 2, Wrocław 7, and the
+    /// villages around it 11 to 15 — so it is the class, not the rank, which sizes a label.
+    ByClass,
+}
+
+const PROTOMAPS: Schema = Schema {
+    earth: "earth",
+    landuse: &["landuse"],
+    water: "water",
+    water_labels: &["water"],
+    waterway: "water",
+    roads: "roads",
+    road_labels: "roads",
+    buildings: "buildings",
+    places: "places",
+    pois: "pois",
+    peaks: &["pois"],
+    boundaries: "boundaries",
+    kind: "kind",
+    kind_detail: "kind_detail",
+    admin_level: "kind_detail",
+    settlements: Settlements::ByPopulationRank,
+    brunnel: None,
+    link: "is_link",
+};
+
+const OPENMAPTILES: Schema = Schema {
+    earth: "", // OpenMapTiles has no land polygon.
+    landuse: &["landcover", "landuse", "park"],
+    water: "water",
+    water_labels: &["water_name"],
+    waterway: "waterway",
+    roads: "transportation",
+    road_labels: "transportation_name",
+    buildings: "building",
+    places: "place",
+    pois: "poi",
+    peaks: &["mountain_peak"],
+    boundaries: "boundary",
+    kind: "class",
+    kind_detail: "subclass",
+    admin_level: "admin_level",
+    settlements: Settlements::ByClass,
+    brunnel: Some("brunnel"),
+    link: "ramp",
+};
+
+/// A road which bridges or tunnels rather than lying on the ground.
+#[derive(Clone, Copy)]
+pub enum Brunnel {
+    Tunnel,
+    Bridge,
+}
+
+impl Brunnel {
+    fn protomaps(self) -> &'static str {
+        match self {
+            Brunnel::Tunnel => "is_tunnel",
+            Brunnel::Bridge => "is_bridge",
+        }
+    }
+
+    fn openmaptiles(self) -> &'static str {
+        match self {
+            Brunnel::Tunnel => "tunnel",
+            Brunnel::Bridge => "bridge",
+        }
+    }
+}
+
+impl Schema {
+    pub fn is(&self, what: Brunnel) -> Value {
+        match self.brunnel {
+            Some(key) => json!(["==", key, what.openmaptiles()]),
+            None => json!(["has", what.protomaps()]),
+        }
+    }
+
+    pub fn is_not(&self, what: Brunnel) -> Value {
+        match self.brunnel {
+            Some(key) => json!(["!=", key, what.openmaptiles()]),
+            None => json!(["!has", what.protomaps()]),
+        }
+    }
+
+    pub fn is_link(&self) -> Value {
+        match self.brunnel {
+            Some(_) => json!(["==", self.link, 1]),
+            None => json!(["has", self.link]),
+        }
+    }
+
+    pub fn is_not_link(&self) -> Value {
+        match self.brunnel {
+            Some(_) => json!(["!=", self.link, 1]),
+            None => json!(["!has", self.link]),
+        }
+    }
+
+    /// Text size for a city, town or village label, growing with zoom and with how big the
+    /// place is. Both schemas answer the second half, but not with the same property.
+    pub fn settlement_text_size(&self) -> Float {
+        match self.settlements {
+            // Two tiers, split at a population rank which itself falls as the map zooms in.
+            Settlements::ByPopulationRank => Float(json!([
+                "interpolate",
+                ["linear"],
+                ["zoom"],
+                2,
+                population_rank_over(13, 13, 8),
+                4,
+                population_rank_over(13, 15, 10),
+                6,
+                population_rank_over(12, 17, 11),
+                8,
+                population_rank_over(11, 18, 11),
+                10,
+                population_rank_over(9, 20, 12),
+                15,
+                population_rank_over(8, 22, 12)
+            ])),
+
+            // Three tiers, because the schema names them. The curve echoes the one above, with
+            // towns landing between a Protomaps locality's two sizes.
+            Settlements::ByClass => {
+                let sizes = |city: u32, town: u32, village: u32| {
+                    json!([
+                        "match",
+                        ["get", self.kind],
+                        "city",
+                        city,
+                        "town",
+                        town,
+                        village
+                    ])
+                };
+
+                Float(json!([
+                    "interpolate",
+                    ["linear"],
+                    ["zoom"],
+                    2,
+                    sizes(13, 8, 8),
+                    4,
+                    sizes(15, 10, 10),
+                    6,
+                    sizes(17, 13, 11),
+                    8,
+                    sizes(18, 14, 11),
+                    10,
+                    sizes(20, 15, 12),
+                    15,
+                    sizes(22, 17, 13)
+                ]))
+            }
+        }
+    }
+}
+
+/// `above` is the size for a settlement whose `population_rank` reaches `rank`, `below` the
+/// size for one which does not.
+fn population_rank_over(rank: u32, above: u32, below: u32) -> Value {
+    json!([
+        "case",
+        [">=", ["get", "population_rank"], rank],
+        above,
+        below
+    ])
+}
+
+impl Style {
+    /// Light Walkers style for Protomaps schema.
+    pub fn protomaps_basemap_light() -> Self {
+        build(&LIGHT, PROTOMAPS)
+    }
+
+    /// Dark Walkers style for Protomaps schema.
+    pub fn protomaps_basemap_dark() -> Self {
+        build(&DARK, PROTOMAPS)
+    }
+
+    /// Light Walkers style for OpenMapTiles schema.
+    pub fn openmaptiles_basemap_light() -> Self {
+        build(&LIGHT, OPENMAPTILES)
+    }
+
+    /// Dark Walkers style for OpenMapTiles schema.
+    pub fn openmaptiles_basemap_dark() -> Self {
+        build(&DARK, OPENMAPTILES)
+    }
+}
+
+struct Palette {
+    background: &'static str,
+    rail: &'static str,
+    rail_tie: &'static str,
+    forest: &'static str,
+    urban_green: &'static str,
+    pier: &'static str,
+    tunnel_casing: &'static str,
+    casing: &'static str,
+    landuse_dark: &'static str,
+    bridge: &'static str,
+    structure: &'static str,
+    muted: &'static str,
+    highway: &'static str,
+    road: &'static str,
+    label_muted: &'static str,
+    major_road_border: &'static str,
+    label: &'static str,
+    locality_text: &'static str,
+    water: &'static str,
+    water_label: &'static str,
+    water_label_halo: &'static str,
+    station: &'static str,
+    peak: &'static str,
+}
+
+const DARK: Palette = Palette {
+    background: "#000000",
+    rail_tie: "#bfbfbf",
+    rail: "#000000",
+    forest: "#061009",
+    urban_green: "#000c00",
+    pier: "#0a0a0a",
+    tunnel_casing: "#101010",
+    casing: "#141414",
+    landuse_dark: "#191919",
+    bridge: "#1f1f1f",
+    structure: "#292929",
+    muted: "#333333",
+    highway: "#352121",
+    road: "#464646",
+    label_muted: "#5c5c5c",
+    major_road_border: "#696868",
+    label: "#707070",
+    locality_text: "#999999",
+    water: "#161e31",
+    water_label: "#134164",
+    water_label_halo: "#0d1526",
+    station: "#7fb3d9",
+    peak: "#b59a6a",
+};
+
+const LIGHT: Palette = Palette {
+    background: "#f2f2f0",
+    rail_tie: "#000000",
+    //rail_tie: "#cccccc",
+    rail: "#ffffff",
+    forest: "#86a180",
+    urban_green: "#e2f0df",
+    pier: "#8c8c8c",
+    tunnel_casing: "#595959",
+    casing: "#ffffff",
+    landuse_dark: "#e0e0e0",
+    bridge: "#bfbfbf",
+    structure: "#d4d4d4",
+    muted: "#b3b3b3",
+    highway: "#bb5f5f",
+    road: "#4a4a4a",
+    label_muted: "#595959",
+    major_road_border: "#1e1e1e",
+    label: "#1f1f1f",
+    locality_text: "#1a1a1a",
+    water: "#88b2e2",
+    water_label: "#2f6690",
+    water_label_halo: "#ffffff",
+    station: "#2b6ca3",
+    peak: "#6b5330",
+};
+
+fn build(palette: &Palette, schema: Schema) -> Style {
+    let mut layers = vec![
+        // background
+        Layer::Background {
+            paint: Paint {
+                background_color: Some(Color(json!(palette.background))),
+                ..Default::default()
+            },
+        },
+        // earth
+        Layer::Fill {
+            source_layer: schema.earth.into(),
+            filter: Some(Filter(json!(["==", "$type", "Polygon"]))),
+            paint: Paint {
+                fill_color: Some(Color(json!(palette.background))),
+                ..Default::default()
+            },
+        },
+        // landuse_park
+        Layer::Fill {
+            source_layer: schema.landuse.into(),
+            filter: Some(Filter(json!([
+                "in",
+                schema.kind,
+                "national_park",
+                "park",
+                "public_park",
+                "nature_reserve",
+                "cemetery",
+                "nature_reserve",
+                "forest",
+                "golf_course",
+                "wood",
+                "farmland",
+                "scrub",
+                "grassland",
+                "grass",
+                "military",
+                "naval_base",
+                "airfield"
+            ]))),
+            paint: Paint {
+                fill_opacity: Some(Float(json!(0.5))),
+                fill_color: Some(Color(json!(palette.forest))),
+                ..Default::default()
+            },
+        },
+        // landuse_urban_green
+        Layer::Fill {
+            source_layer: schema.landuse.into(),
+            filter: Some(Filter(json!([
+                "in",
+                schema.kind,
+                "allotments",
+                "village_green",
+                "playground"
+            ]))),
+            paint: Paint {
+                fill_color: Some(Color(json!(palette.urban_green))),
+                ..Default::default()
+            },
+        },
+        // landuse_hospital
+        Layer::Fill {
+            source_layer: schema.landuse.into(),
+            filter: Some(Filter(json!(["==", schema.kind, "hospital"]))),
+            paint: Paint {
+                fill_color: Some(Color(json!(palette.landuse_dark))),
+                ..Default::default()
+            },
+        },
+        // landuse_industrial
+        //Layer::Fill {
+        //    source_layer: schema.landuse.into(),
+        //    filter: Some(Filter(json!(["==", schema.kind, "industrial"]))),
+        //    paint: Paint {
+        //        fill_color: Some(Color(json!(palette.tunnel_casing))),
+        //        ..Default::default()
+        //    },
+        //},
+        // landuse_beach
+        Layer::Fill {
+            source_layer: schema.landuse.into(),
+            filter: Some(Filter(json!(["in", schema.kind, "beach"]))),
+            paint: Paint {
+                fill_color: Some(Color(json!(palette.bridge))),
+                ..Default::default()
+            },
+        },
+        // landuse_zoo
+        Layer::Fill {
+            source_layer: schema.landuse.into(),
+            filter: Some(Filter(json!(["in", schema.kind, "zoo"]))),
+            paint: Paint {
+                fill_color: Some(Color(json!(palette.landuse_dark))),
+                ..Default::default()
+            },
+        },
+        // landuse_aerodrome
+        Layer::Fill {
+            source_layer: schema.landuse.into(),
+            filter: Some(Filter(json!(["in", schema.kind, "aerodrome"]))),
+            paint: Paint {
+                fill_color: Some(Color(json!(palette.landuse_dark))),
+                ..Default::default()
+            },
+        },
+        // roads_runway
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!(["==", schema.kind_detail, "runway"]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.muted))),
+                line_width: Some(linear_zoom_interpolation(&[
+                    (10.0, 0.0),
+                    (12.0, 4.0),
+                    (18.0, 30.0),
+                ])),
+                ..Default::default()
+            },
+        },
+        // roads_taxiway
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!(["==", schema.kind_detail, "taxiway"]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.muted))),
+                line_width: Some(linear_zoom_interpolation(&[
+                    (13.0, 0.0),
+                    (13.5, 1.0),
+                    (15.0, 6.0),
+                ])),
+                ..Default::default()
+            },
+        },
+        // landuse_runway
+        Layer::Fill {
+            source_layer: schema.landuse.into(),
+            filter: Some(Filter(json!(["in", schema.kind, "runway", "taxiway"]))),
+            paint: Paint {
+                fill_color: Some(Color(json!(palette.muted))),
+                ..Default::default()
+            },
+        },
+        // water
+        Layer::Fill {
+            source_layer: schema.water.into(),
+            filter: Some(Filter(json!(["==", "$type", "Polygon"]))),
+            paint: Paint {
+                fill_color: Some(Color(json!(palette.water))),
+                ..Default::default()
+            },
+        },
+        // water_stream
+        Layer::Line {
+            source_layer: schema.waterway.into(),
+            filter: Some(Filter(json!(["in", schema.kind, "stream"]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.water))),
+                ..Default::default()
+            },
+        },
+        // water_river
+        Layer::Line {
+            source_layer: schema.waterway.into(),
+            filter: Some(Filter(json!(["in", schema.kind, "river"]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.water))),
+                line_width: Some(linear_zoom_interpolation(&[
+                    (9.0, 0.0),
+                    (9.5, 1.0),
+                    (18.0, 12.0),
+                ])),
+                ..Default::default()
+            },
+        },
+        // landuse_pedestrian
+        Layer::Fill {
+            source_layer: schema.landuse.into(),
+            filter: Some(Filter(json!(["in", schema.kind, "pedestrian", "dam"]))),
+            paint: Paint {
+                fill_color: Some(Color(json!(palette.landuse_dark))),
+                ..Default::default()
+            },
+        },
+        // landuse_pier
+        Layer::Fill {
+            source_layer: schema.landuse.into(),
+            filter: Some(Filter(json!(["==", schema.kind, "pier"]))),
+            paint: Paint {
+                fill_color: Some(Color(json!(palette.pier))),
+                ..Default::default()
+            },
+        },
+        // roads_tunnels_other_casing
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!([
+                "all",
+                schema.is(Brunnel::Tunnel),
+                ["in", schema.kind, "other", "path", "service", "track"]
+            ]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.tunnel_casing))),
+                ..Default::default()
+            },
+        },
+        // roads_tunnels_minor_casing
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!([
+                "all",
+                schema.is(Brunnel::Tunnel),
+                ["in", schema.kind, "minor_road", "minor", "tertiary"]
+            ]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.tunnel_casing))),
+                line_dasharray: Some(Dasharray(json!([2, 2]))),
+                line_width: Some(linear_zoom_interpolation(&[(12.0, 0.0), (12.5, 1.0)])),
+                ..Default::default()
+            },
+        },
+        // roads_tunnels_link_casing
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!([
+                "all",
+                schema.is(Brunnel::Tunnel),
+                schema.is_link()
+            ]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.tunnel_casing))),
+                line_dasharray: Some(Dasharray(json!([2, 2]))),
+                line_width: Some(linear_zoom_interpolation(&[(12.0, 0.0), (12.5, 1.0)])),
+                ..Default::default()
+            },
+        },
+        // roads_tunnels_major_casing
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!([
+                "all",
+                schema.is_not(Brunnel::Tunnel),
+                schema.is_not(Brunnel::Bridge),
+                ["in", schema.kind, "major_road", "primary", "secondary"]
+            ]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.tunnel_casing))),
+                line_dasharray: Some(Dasharray(json!([2, 2]))),
+                line_width: Some(linear_zoom_interpolation(&[(9.0, 0.0), (9.5, 1.0)])),
+                ..Default::default()
+            },
+        },
+        // roads_tunnels_highway_casing
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!([
+                "all",
+                schema.is_not(Brunnel::Tunnel),
+                schema.is_not(Brunnel::Bridge),
+                ["in", schema.kind, "highway", "motorway", "trunk"],
+                schema.is_not_link()
+            ]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.tunnel_casing))),
+                line_dasharray: Some(Dasharray(json!([2, 2]))),
+                line_width: Some(linear_zoom_interpolation(&[
+                    (7.0, 0.0),
+                    (7.5, 1.5),
+                    (20.0, 22.5),
+                ])),
+                ..Default::default()
+            },
+        },
+        // roads_tunnels_other
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!([
+                "all",
+                schema.is(Brunnel::Tunnel),
+                ["in", schema.kind, "other", "path", "service", "track"]
+            ]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.structure))),
+                line_dasharray: Some(Dasharray(json!([2, 2]))),
+                line_width: Some(linear_zoom_interpolation(&[(14.0, 0.0), (20.0, 7.0)])),
+                ..Default::default()
+            },
+        },
+        // roads_tunnels_minor
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!([
+                "all",
+                schema.is(Brunnel::Tunnel),
+                ["in", schema.kind, "minor_road", "minor", "tertiary"]
+            ]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.structure))),
+                line_width: Some(linear_zoom_interpolation(&[
+                    (11.0, 0.0),
+                    (12.5, 0.5),
+                    (15.0, 2.0),
+                    (18.0, 11.0),
+                ])),
+                ..Default::default()
+            },
+        },
+        // roads_tunnels_link
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!([
+                "all",
+                schema.is(Brunnel::Tunnel),
+                schema.is_link()
+            ]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.structure))),
+                line_width: Some(linear_zoom_interpolation(&[
+                    (13.0, 0.0),
+                    (13.5, 1.0),
+                    (18.0, 11.0),
+                ])),
+                ..Default::default()
+            },
+        },
+        // roads_tunnels_major
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!([
+                "all",
+                schema.is(Brunnel::Tunnel),
+                ["in", schema.kind, "major_road", "primary", "secondary"]
+            ]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.structure))),
+                line_width: Some(linear_zoom_interpolation(&[
+                    (6.0, 0.0),
+                    (12.0, 1.6),
+                    (15.0, 3.0),
+                    (18.0, 13.0),
+                ])),
+                ..Default::default()
+            },
+        },
+        // roads_tunnels_highway
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!([
+                "all",
+                schema.is(Brunnel::Tunnel),
+                ["==", ["get", schema.kind], "highway"],
+                ["!", schema.is_link()]
+            ]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.structure))),
+                line_width: Some(linear_zoom_interpolation(&[
+                    (3.0, 0.0),
+                    (6.0, 1.65),
+                    (12.0, 2.4),
+                    (15.0, 7.5),
+                    (18.0, 22.5),
+                ])),
+                ..Default::default()
+            },
+        },
+        // buildings
+        Layer::Fill {
+            source_layer: schema.buildings.into(),
+            filter: Some(Filter(json!([
+                "any",
+                ["in", schema.kind, "building", "building_part"],
+                ["!has", schema.kind]
+            ]))),
+            paint: Paint {
+                fill_color: Some(Color(json!(palette.structure))),
+                fill_opacity: Some(Float(json!(0.5))),
+                ..Default::default()
+            },
+        },
+        // roads_pier
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!(["==", schema.kind_detail, "pier"]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.pier))),
+                line_width: Some(linear_zoom_interpolation(&[
+                    (12.0, 0.0),
+                    (12.5, 0.5),
+                    (20.0, 16.0),
+                ])),
+                ..Default::default()
+            },
+        },
+        // roads_minor_service_casing
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!([
+                "all",
+                schema.is_not(Brunnel::Tunnel),
+                schema.is_not(Brunnel::Bridge),
+                ["in", schema.kind, "minor_road", "minor", "tertiary"],
+                ["==", schema.kind_detail, "service"]
+            ]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.casing))),
+                line_width: Some(linear_zoom_interpolation(&[(13.0, 0.0), (13.5, 0.8)])),
+                ..Default::default()
+            },
+        },
+        // roads_minor_casing
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!([
+                "all",
+                schema.is_not(Brunnel::Tunnel),
+                schema.is_not(Brunnel::Bridge),
+                ["in", schema.kind, "minor_road", "minor", "tertiary"],
+                ["!=", schema.kind_detail, "service"]
+            ]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.casing))),
+                line_width: Some(linear_zoom_interpolation(&[(12.0, 0.0), (12.5, 1.0)])),
+                ..Default::default()
+            },
+        },
+        // roads_link_casing
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!(schema.is_link()))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.casing))),
+                line_width: Some(linear_zoom_interpolation(&[(13.0, 0.0), (13.5, 1.5)])),
+                ..Default::default()
+            },
+        },
+        // roads_major_casing_late
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!([
+                "all",
+                schema.is_not(Brunnel::Tunnel),
+                schema.is_not(Brunnel::Bridge),
+                ["in", schema.kind, "major_road", "primary", "secondary"]
+            ]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.casing))),
+                line_width: Some(linear_zoom_interpolation(&[(9.0, 0.0), (9.5, 1.0)])),
+                ..Default::default()
+            },
+        },
+        // roads_highway_casing_late
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!([
+                "all",
+                schema.is_not(Brunnel::Tunnel),
+                schema.is_not(Brunnel::Bridge),
+                ["in", schema.kind, "highway", "motorway", "trunk"],
+                schema.is_not_link()
+            ]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.casing))),
+                line_width: Some(linear_zoom_interpolation(&[
+                    (7.0, 0.0),
+                    (7.5, 1.5),
+                    (20.0, 22.5),
+                ])),
+                ..Default::default()
+            },
+        },
+        // roads_other
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!([
+                "all",
+                schema.is_not(Brunnel::Tunnel),
+                schema.is_not(Brunnel::Bridge),
+                ["in", schema.kind, "other", "path", "service", "track"],
+                ["!=", schema.kind_detail, "pier"]
+            ]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.structure))),
+                line_width: Some(linear_zoom_interpolation(&[
+                    (11.0, 0.0),
+                    (12.0, 1.0),
+                    (20.0, 7.0),
+                ])),
+                ..Default::default()
+            },
+        },
+        // roads_link
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!(schema.is_link()))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.bridge))),
+                line_width: Some(linear_zoom_interpolation(&[
+                    (13.0, 0.0),
+                    (13.5, 1.0),
+                    (18.0, 11.0),
+                ])),
+                ..Default::default()
+            },
+        },
+        // roads_minor
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!([
+                "all",
+                schema.is_not(Brunnel::Tunnel),
+                schema.is_not(Brunnel::Bridge),
+                ["in", schema.kind, "minor_road", "minor", "tertiary"]
+            ]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.road))),
+                line_width: Some(linear_zoom_interpolation(&[
+                    (11.0, 0.0),
+                    (12.0, 1.0),
+                    (20.0, 7.0),
+                ])),
+                ..Default::default()
+            },
+        },
+        // roads_major_border
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!([
+                "all",
+                schema.is_not(Brunnel::Tunnel),
+                schema.is_not(Brunnel::Bridge),
+                ["in", schema.kind, "major_road", "primary", "secondary"]
+            ]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.major_road_border))),
+                line_width: Some(linear_zoom_interpolation(&[
+                    (6.0, 0.0),
+                    (12.0, 1.6),
+                    (15.0, 5.0),
+                    (18.0, 17.0),
+                ])),
+                ..Default::default()
+            },
+        },
+        // roads_major
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!([
+                "all",
+                schema.is_not(Brunnel::Tunnel),
+                schema.is_not(Brunnel::Bridge),
+                ["in", schema.kind, "major_road", "primary", "secondary"]
+            ]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.road))),
+                line_width: Some(linear_zoom_interpolation(&[
+                    (6.0, 0.0),
+                    (12.0, 1.6),
+                    (15.0, 3.0),
+                    (18.0, 13.0),
+                ])),
+                ..Default::default()
+            },
+        },
+        // roads_highway
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!([
+                "all",
+                schema.is_not(Brunnel::Tunnel),
+                schema.is_not(Brunnel::Bridge),
+                ["in", schema.kind, "highway", "motorway", "trunk"],
+                schema.is_not_link()
+            ]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.highway))),
+                line_width: Some(linear_zoom_interpolation(&[
+                    (3.0, 0.0),
+                    (6.0, 1.65),
+                    (12.0, 2.4),
+                    (15.0, 7.5),
+                    (18.0, 22.5),
+                ])),
+                ..Default::default()
+            },
+        },
+        // roads_rail
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!(["in", schema.kind, "rail", "transit"]))),
+            paint: Paint {
+                //line_opacity: Some(Float(json!(0.5))),
+                line_color: Some(Color(json!(palette.rail))),
+                line_width: Some(linear_zoom_interpolation(&[(3.0, 0.0), (18.0, 3.5)])),
+                ..Default::default()
+            },
+        },
+        // roads_rail_inside
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!(["in", schema.kind, "rail", "transit"]))),
+            paint: Paint {
+                line_opacity: Some(Float(json!(0.5))),
+                line_color: Some(Color(json!(palette.rail_tie))),
+                line_dasharray: Some(Dasharray(json!([2, 2]))),
+                line_width: Some(linear_zoom_interpolation(&[(3.0, 0.0), (18.0, 2.0)])),
+                ..Default::default()
+            },
+        },
+        // boundaries_country
+        Layer::Line {
+            source_layer: schema.boundaries.into(),
+            filter: Some(Filter(json!(["<=", schema.admin_level, 2]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.label))),
+                line_width: Some(Float(json!(2))),
+                line_dasharray: Some(Dasharray(json!([
+                    "step",
+                    ["zoom"],
+                    ["literal", [2, 0]],
+                    4,
+                    ["literal", [2, 1]]
+                ]))),
+                ..Default::default()
+            },
+        },
+        // roads_bridges_other_casing
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!([
+                "all",
+                schema.is(Brunnel::Bridge),
+                ["in", schema.kind, "other", "path", "service", "track"]
+            ]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.casing))),
+                ..Default::default()
+            },
+        },
+        // roads_bridges_link_casing
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!([
+                "all",
+                schema.is(Brunnel::Bridge),
+                schema.is_link()
+            ]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.casing))),
+                line_width: Some(linear_zoom_interpolation(&[(12.0, 0.0), (12.5, 1.5)])),
+                ..Default::default()
+            },
+        },
+        // roads_bridges_minor_casing
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!([
+                "all",
+                schema.is(Brunnel::Bridge),
+                ["in", schema.kind, "minor_road", "minor", "tertiary"]
+            ]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.casing))),
+                line_width: Some(linear_zoom_interpolation(&[(13.0, 0.0), (13.5, 0.8)])),
+                ..Default::default()
+            },
+        },
+        // roads_bridges_major_casing
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!([
+                "all",
+                schema.is(Brunnel::Bridge),
+                ["in", schema.kind, "major_road", "primary", "secondary"]
+            ]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.casing))),
+                line_width: Some(linear_zoom_interpolation(&[(9.0, 0.0), (9.5, 1.5)])),
+                ..Default::default()
+            },
+        },
+        // roads_bridges_other
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!([
+                "all",
+                schema.is(Brunnel::Bridge),
+                ["in", schema.kind, "other", "path", "service", "track"]
+            ]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.bridge))),
+                line_dasharray: Some(Dasharray(json!([2, 2]))),
+                line_width: Some(linear_zoom_interpolation(&[(14.0, 0.0), (20.0, 7.0)])),
+                ..Default::default()
+            },
+        },
+        // roads_bridges_minor
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!([
+                "all",
+                schema.is(Brunnel::Bridge),
+                ["in", schema.kind, "minor_road", "minor", "tertiary"]
+            ]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.bridge))),
+                line_width: Some(linear_zoom_interpolation(&[
+                    (11.0, 0.0),
+                    (12.5, 0.5),
+                    (15.0, 2.0),
+                    (18.0, 11.0),
+                ])),
+                ..Default::default()
+            },
+        },
+        // roads_bridges_link
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!([
+                "all",
+                schema.is(Brunnel::Bridge),
+                schema.is_link()
+            ]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.bridge))),
+                line_width: Some(linear_zoom_interpolation(&[
+                    (13.0, 0.0),
+                    (13.5, 1.0),
+                    (18.0, 11.0),
+                ])),
+                ..Default::default()
+            },
+        },
+        // roads_bridges_major
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!([
+                "all",
+                schema.is(Brunnel::Bridge),
+                ["in", schema.kind, "major_road", "primary", "secondary"]
+            ]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.structure))),
+                line_width: Some(linear_zoom_interpolation(&[
+                    (6.0, 0.0),
+                    (12.0, 1.6),
+                    (15.0, 3.0),
+                    (18.0, 13.0),
+                ])),
+                ..Default::default()
+            },
+        },
+        // roads_bridges_highway_casing
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!([
+                "all",
+                schema.is(Brunnel::Bridge),
+                ["in", schema.kind, "highway", "motorway", "trunk"],
+                schema.is_not_link()
+            ]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.casing))),
+                line_width: Some(linear_zoom_interpolation(&[
+                    (7.0, 0.0),
+                    (7.5, 1.5),
+                    (20.0, 22.5),
+                ])),
+                ..Default::default()
+            },
+        },
+        // roads_bridges_highway
+        Layer::Line {
+            source_layer: schema.roads.into(),
+            filter: Some(Filter(json!([
+                "all",
+                schema.is(Brunnel::Bridge),
+                ["in", schema.kind, "highway", "motorway", "trunk"],
+                schema.is_not_link()
+            ]))),
+            paint: Paint {
+                line_color: Some(Color(json!(palette.structure))),
+                line_width: Some(linear_zoom_interpolation(&[
+                    (3.0, 0.0),
+                    (6.0, 1.65),
+                    (12.0, 2.4),
+                    (15.0, 7.5),
+                    (18.0, 22.5),
+                ])),
+                ..Default::default()
+            },
+        },
+        // address_label
+        Layer::Symbol {
+            source_layer: schema.buildings.into(),
+            filter: Some(Filter(json!(["==", schema.kind, "address"]))),
+            layout: Layout {
+                text_field: Some(json!(["get", "addr_housenumber"])),
+                text_size: Some(Float(json!(10))),
+            },
+            paint: Some(Paint {
+                text_color: Some(Color(json!(palette.label))),
+                text_halo_color: Some(Color(json!(palette.casing))),
+                text_halo_width: Some(Float(json!(1.5))),
+                ..Default::default()
+            }),
+        },
+        // water_waterway_label
+        Layer::Symbol {
+            source_layer: schema.waterway.into(),
+            filter: Some(Filter(json!(["in", schema.kind, "river", "stream"]))),
+            layout: Layout {
+                text_field: Some(json!(["get", "name"])),
+                text_size: Some(Float(json!(12))),
+            },
+            paint: Some(Paint {
+                text_color: Some(Color(json!(palette.water_label))),
+                text_halo_color: Some(Color(json!(palette.water_label_halo))),
+                text_halo_width: Some(Float(json!(1.5))),
+                ..Default::default()
+            }),
+        },
+        // roads_oneway
+        Layer::Symbol {
+            source_layer: schema.road_labels.into(),
+            filter: Some(Filter(json!(["==", ["get", "oneway"], "yes"]))),
+            layout: Layout {
+                text_field: None,
+                text_size: None,
+            },
+            paint: None,
+        },
+        // roads_labels_minor
+        Layer::Symbol {
+            source_layer: schema.road_labels.into(),
+            filter: Some(Filter(json!([
+                "in",
+                schema.kind,
+                "minor_road",
+                "minor",
+                "tertiary",
+                "other",
+                "path",
+                "service",
+                "track"
+            ]))),
+            layout: Layout {
+                text_field: Some(json!(["get", "name"])),
+                text_size: Some(Float(json!(12))),
+            },
+            paint: Some(Paint {
+                text_color: Some(Color(json!(palette.label_muted))),
+                text_halo_color: Some(Color(json!(palette.background))),
+                text_halo_width: Some(Float(json!(1.5))),
+                ..Default::default()
+            }),
+        },
+        // water_label_ocean
+        Layer::Symbol {
+            source_layer: schema.water_labels.into(),
+            filter: Some(Filter(json!([
+                "in",
+                schema.kind,
+                "sea",
+                "ocean",
+                "bay",
+                "strait",
+                "fjord"
+            ]))),
+            layout: Layout {
+                text_field: Some(json!(["get", "name"])),
+                text_size: Some(linear_zoom_interpolation(&[(3.0, 10.0), (10.0, 12.0)])),
+            },
+            paint: Some(Paint {
+                text_color: Some(Color(json!(palette.water_label))),
+                text_halo_color: Some(Color(json!(palette.water_label_halo))),
+                text_halo_width: Some(Float(json!(1.5))),
+                ..Default::default()
+            }),
+        },
+        // earth_label_islands
+        Layer::Symbol {
+            source_layer: schema.earth.into(),
+            filter: Some(Filter(json!(["in", schema.kind, "island"]))),
+            layout: Layout {
+                text_field: Some(json!(["get", "name"])),
+                text_size: Some(Float(json!(10))),
+            },
+            paint: Some(Paint {
+                text_color: Some(Color(json!(palette.label_muted))),
+                text_halo_color: Some(Color(json!(palette.casing))),
+                text_halo_width: Some(Float(json!(1.5))),
+                ..Default::default()
+            }),
+        },
+        // water_label_lakes
+        Layer::Symbol {
+            source_layer: schema.water_labels.into(),
+            filter: Some(Filter(json!(["in", schema.kind, "lake", "water"]))),
+            layout: Layout {
+                text_field: Some(json!(["get", "name"])),
+                text_size: Some(linear_zoom_interpolation(&[
+                    (3.0, 10.0),
+                    (6.0, 12.0),
+                    (10.0, 12.0),
+                ])),
+            },
+            paint: Some(Paint {
+                text_color: Some(Color(json!(palette.water_label))),
+                text_halo_color: Some(Color(json!(palette.water_label_halo))),
+                text_halo_width: Some(Float(json!(1.5))),
+                ..Default::default()
+            }),
+        },
+        // roads_shields
+        Layer::Symbol {
+            source_layer: schema.road_labels.into(),
+            filter: Some(Filter(json!([
+                "all",
+                [
+                    "in",
+                    ["get", schema.kind],
+                    [
+                        "literal",
+                        [
+                            "highway",
+                            "motorway",
+                            "trunk",
+                            "major_road",
+                            "primary",
+                            "secondary"
+                        ]
+                    ]
+                ],
+                ["has", "shield_text"],
+                ["<=", ["length", ["get", "shield_text"]], 5]
+            ]))),
+            layout: Layout {
+                text_field: Some(json!(["get", "shield_text"])),
+                text_size: Some(Float(json!(8))),
+            },
+            paint: Some(Paint {
+                text_color: Some(Color(json!(palette.label_muted))),
+                ..Default::default()
+            }),
+        },
+        // roads_labels_major
+        Layer::Symbol {
+            source_layer: schema.road_labels.into(),
+            filter: Some(Filter(json!([
+                "in",
+                schema.kind,
+                "highway",
+                "motorway",
+                "trunk",
+                "major_road",
+                "primary",
+                "secondary"
+            ]))),
+            layout: Layout {
+                text_field: Some(json!(["get", "name"])),
+                text_size: Some(Float(json!(13))),
+            },
+            paint: Some(Paint {
+                text_color: Some(Color(json!(palette.label))),
+                text_halo_color: Some(Color(json!(palette.background))),
+                text_halo_width: Some(Float(json!(1.5))),
+                ..Default::default()
+            }),
+        },
+        // places_subplace
+        Layer::Symbol {
+            source_layer: schema.places.into(),
+            filter: Some(Filter(json!([
+                "in",
+                schema.kind,
+                "neighbourhood",
+                "macrohood",
+                "suburb",
+                "quarter"
+            ]))),
+            layout: Layout {
+                text_field: Some(json!(["get", "name"])),
+                text_size: Some(linear_zoom_interpolation(&[
+                    (11.0, 8.0),
+                    (14.0, 14.0),
+                    (18.0, 24.0),
+                ])),
+            },
+            paint: Some(Paint {
+                text_color: Some(Color(json!(palette.label_muted))),
+                text_halo_color: Some(Color(json!(palette.casing))),
+                text_halo_width: Some(Float(json!(1.5))),
+                ..Default::default()
+            }),
+        },
+        // places_region
+        Layer::Symbol {
+            source_layer: schema.places.into(),
+            filter: Some(Filter(json!(["in", schema.kind, "region", "state"]))),
+            layout: Layout {
+                text_field: Some(json!(["get", "name"])),
+                text_size: Some(linear_zoom_interpolation(&[(3.0, 11.0), (7.0, 16.0)])),
+            },
+            paint: Some(Paint {
+                text_color: Some(Color(json!(palette.label))),
+                text_halo_color: Some(Color(json!(palette.casing))),
+                text_halo_width: Some(Float(json!(1.5))),
+                ..Default::default()
+            }),
+        },
+        // places_locality
+        Layer::Symbol {
+            source_layer: schema.places.into(),
+            filter: Some(Filter(json!([
+                "in",
+                schema.kind,
+                "locality",
+                "city",
+                "town",
+                "village"
+            ]))),
+            layout: Layout {
+                text_field: Some(json!(["get", "name"])),
+                text_size: Some(schema.settlement_text_size()),
+            },
+            paint: Some(Paint {
+                text_color: Some(Color(json!(palette.locality_text))),
+                text_halo_color: Some(Color(json!(palette.casing))),
+                text_halo_width: Some(Float(json!(1.5))),
+                ..Default::default()
+            }),
+        },
+        // places_country
+        Layer::Symbol {
+            source_layer: schema.places.into(),
+            filter: Some(Filter(json!(["==", schema.kind, "country"]))),
+            layout: Layout {
+                text_field: Some(json!(["get", "name:en"])),
+                text_size: Some(Float(json!(18.0))),
+            },
+            paint: Some(Paint {
+                text_color: Some(Color(json!(palette.label))),
+                text_halo_color: Some(Color(json!(palette.casing))),
+                text_halo_width: Some(Float(json!(1.5))),
+                ..Default::default()
+            }),
+        },
+        // stations
+        Layer::Symbol {
+            source_layer: schema.pois.into(),
+            filter: Some(Filter(json!(["==", schema.kind, "station"]))),
+            layout: Layout {
+                text_field: Some(json!(["get", "name"])),
+                text_size: Some(Float(json!(11))),
+            },
+            paint: Some(Paint {
+                text_color: Some(Color(json!(palette.station))),
+                text_halo_color: Some(Color(json!(palette.casing))),
+                text_halo_width: Some(Float(json!(1.5))),
+                ..Default::default()
+            }),
+        },
+        // peaks
+        Layer::Symbol {
+            source_layer: schema.peaks.into(),
+            filter: Some(Filter(json!(["in", schema.kind, "peak", "volcano"]))),
+            layout: Layout {
+                text_field: Some(json!(["get", "name"])),
+                text_size: Some(linear_zoom_interpolation(&[(8.0, 10.0), (14.0, 14.0)])),
+            },
+            paint: Some(Paint {
+                text_color: Some(Color(json!(palette.peak))),
+                text_halo_color: Some(Color(json!(palette.casing))),
+                text_halo_width: Some(Float(json!(1.5))),
+                ..Default::default()
+            }),
+        },
+    ];
+
+    // A schema which does not carry a layer leaves its name empty, and an empty source layer
+    // would match every layer of the tile rather than none.
+    layers.retain(|layer| source_layer_of(layer).is_none_or(|source| !source.is_all()));
+
+    Style { layers }
+}
+
+fn source_layer_of(layer: &Layer) -> Option<&SourceLayer> {
+    match layer {
+        Layer::Fill { source_layer, .. }
+        | Layer::Line { source_layer, .. }
+        | Layer::Symbol { source_layer, .. } => Some(source_layer),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::expression::Context;
+    use std::collections::HashMap;
+
+    /// Size the style gives a label, found the way the renderer finds it: the layer which asks
+    /// for this source layer and whose filter the feature passes.
+    fn label_size(style: &Style, source: &str, properties: Value, zoom: u8) -> f32 {
+        let context = Context::new(
+            "Point".to_owned(),
+            serde_json::from_value::<HashMap<String, Value>>(properties).unwrap(),
+            zoom,
+        );
+
+        let sizes: Vec<f32> = style
+            .layers
+            .iter()
+            .filter_map(|layer| match layer {
+                Layer::Symbol {
+                    source_layer,
+                    filter,
+                    layout,
+                    ..
+                } if source_layer.matches(source)
+                    && filter
+                        .as_ref()
+                        .is_some_and(|filter| filter.matches(&context)) =>
+                {
+                    layout
+                        .text_size
+                        .as_ref()
+                        .map(|size| size.evaluate(&context))
+                }
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            sizes.len(),
+            1,
+            "expected one label for {source}, got {sizes:?}"
+        );
+        sizes[0]
+    }
+
+    /// The two schemas rank a settlement in opposite directions. Protomaps' `population_rank`
+    /// counts up with population, while OpenMapTiles' `rank` is a placement priority where 1
+    /// is the most prominent — Berlin is 2, Wrocław 7, and the villages around it 11 to 15.
+    /// Reading the second as if it were the first drew villages larger than the city.
+    #[test]
+    fn a_city_is_labelled_larger_than_a_village() {
+        for zoom in [6, 10, 14] {
+            let protomaps = Style::protomaps_basemap_light();
+            assert!(
+                label_size(
+                    &protomaps,
+                    "places",
+                    json!({"kind": "locality", "population_rank": 13}),
+                    zoom
+                ) > label_size(
+                    &protomaps,
+                    "places",
+                    json!({"kind": "locality", "population_rank": 3}),
+                    zoom
+                ),
+                "protomaps, zoom {zoom}"
+            );
+
+            let openmaptiles = Style::openmaptiles_basemap_light();
+            assert!(
+                label_size(
+                    &openmaptiles,
+                    "place",
+                    json!({"class": "city", "rank": 7}),
+                    zoom
+                ) > label_size(
+                    &openmaptiles,
+                    "place",
+                    json!({"class": "village", "rank": 12}),
+                    zoom
+                ),
+                "openmaptiles, zoom {zoom}"
+            );
+        }
+    }
+
+    /// OpenMapTiles keeps the settlement's size in `class`, so all three tiers can be told
+    /// apart — which `population_rank` alone cannot do on Protomaps.
+    #[test]
+    fn openmaptiles_labels_a_town_between_a_city_and_a_village() {
+        let style = Style::openmaptiles_basemap_light();
+        let size = |class| label_size(&style, "place", json!({ "class": class, "rank": 11 }), 12);
+
+        assert!(size("city") > size("town"));
+        assert!(size("town") > size("village"));
+    }
+
+    fn asks_for(style: &Style, name: &str) -> bool {
+        style
+            .layers
+            .iter()
+            .filter_map(source_layer_of)
+            .any(|source| source.matches(name))
+    }
+
+    /// OpenMapTiles has no land polygon, so those layers are dropped rather than asked for.
+    #[test]
+    fn a_schema_only_gets_the_layers_it_can_serve() {
+        assert!(asks_for(&Style::protomaps_basemap_dark(), "earth"));
+        assert!(!asks_for(&Style::openmaptiles_basemap_dark(), "earth"));
+    }
+
+    /// OpenMapTiles spreads landuse over `landcover`, `landuse` and `park`.
+    #[test]
+    fn a_concept_split_across_layers_needs_no_extra_layers() {
+        let openmaptiles = Style::openmaptiles_basemap_dark();
+
+        for name in ["landcover", "landuse", "park"] {
+            assert!(asks_for(&openmaptiles, name), "does not ask for {name}");
+        }
+
+        let landuse_layers = |style: &Style| {
+            style
+                .layers
+                .iter()
+                .filter_map(source_layer_of)
+                .filter(|source| source.matches("landcover") || source.matches("landuse"))
+                .count()
+        };
+
+        assert_eq!(
+            landuse_layers(&openmaptiles),
+            landuse_layers(&Style::protomaps_basemap_dark())
+        );
+    }
+
+    #[test]
+    fn each_schema_asks_for_its_own_source_layers() {
+        let protomaps = Style::protomaps_basemap_dark();
+        let openmaptiles = Style::openmaptiles_basemap_dark();
+
+        assert!(asks_for(&protomaps, "roads"));
+        assert!(asks_for(&protomaps, "buildings"));
+        assert!(!asks_for(&protomaps, "transportation"));
+
+        assert!(asks_for(&openmaptiles, "transportation"));
+        assert!(asks_for(&openmaptiles, "transportation_name"));
+        assert!(asks_for(&openmaptiles, "waterway"));
+        assert!(asks_for(&openmaptiles, "building"));
+        assert!(!asks_for(&openmaptiles, "roads"));
+    }
+}

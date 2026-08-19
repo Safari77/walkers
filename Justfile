@@ -14,7 +14,11 @@ check-demo:
     cargo check -p demo_native
 
 [group('develop')]
-check: check-lean check-all-features check-demo
+check-wanderers:
+    cargo check -p wanderers
+
+[group('develop')]
+check: check-lean check-all-features check-demo check-wanderers
 
 [group('develop')]
 lints:
@@ -44,6 +48,14 @@ overpass-trails-dolnoslaskie:
         --data-urlencode 'data=[out:json][timeout:120];(relation["route"~"hiking|foot"]["colour"]({{ DOLNOSLASKIE_OVERPASS_BBOX }}););out geom;' \
         -o trails.json
     osmtogeojson trails.json > trails.geojson
+
+# Download mountain peaks for Dolnośląskie, Poland from OpenStreetMap using Overpass API and convert to GeoJSON
+[group('data')]
+overpass-peaks-dolnoslaskie:
+    curl -G https://overpass-api.de/api/interpreter \
+        --data-urlencode 'data=[out:json][timeout:120];(node["natural"="peak"]["name"]({{ DOLNOSLASKIE_OVERPASS_BBOX }}););out geom;' \
+        -o peaks.json
+    osmtogeojson peaks.json > peaks.geojson
 
 # Download the latest PMTiles file for Dolnośląskie, Poland from Protomaps.
 [group('data')]
