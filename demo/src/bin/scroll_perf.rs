@@ -56,11 +56,6 @@ impl Rolling {
         self.samples.push_back(value);
     }
 
-    /// Whether enough frames have gone by for the mean to be worth reporting.
-    fn settled(&self) -> bool {
-        self.samples.len() == AVERAGED_FRAMES
-    }
-
     fn mean(&self) -> f64 {
         if self.samples.is_empty() {
             return 0.0;
@@ -81,9 +76,6 @@ struct ScrollPerf {
     scrolling: bool,
     previous_frame: Option<Instant>,
     frame_ms: Rolling,
-
-    /// So that the numbers can be kept without screenshotting the window.
-    last_reported: Option<Instant>,
 }
 
 impl ScrollPerf {
@@ -119,7 +111,6 @@ impl ScrollPerf {
             scrolling: true,
             previous_frame: None,
             frame_ms: Rolling::new(),
-            last_reported: None,
         }
     }
 
@@ -140,7 +131,6 @@ impl ScrollPerf {
 
 impl eframe::App for ScrollPerf {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // Draw flat out, rather than waiting for something to happen.
         ui.ctx().request_repaint();
 
         let now = Instant::now();
@@ -184,15 +174,6 @@ impl eframe::App for ScrollPerf {
             self.memory.zoom(),
             if self.scrolling { "stop" } else { "scroll" },
         );
-
-        if self.frame_ms.settled()
-            && self
-                .last_reported
-                .is_none_or(|reported| reported.elapsed().as_secs_f64() >= 1.)
-        {
-            self.last_reported = Some(Instant::now());
-            log::info!("{}", summary.replace('\n', " | "));
-        }
 
         Window::new("Stats")
             .collapsible(false)
