@@ -985,6 +985,7 @@ dependencies = [
  "eframe",
  "egui",
  "egui_extras",
+ "env_logger",
  "getrandom 0.4.3",
  "rand 0.10.2",
  "walkers",
