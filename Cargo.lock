@@ -987,7 +987,6 @@ dependencies = [
  "egui_extras",
  "env_logger",
  "getrandom 0.4.3",
- "log",
  "rand 0.10.2",
  "walkers",
  "walkers_extras",
