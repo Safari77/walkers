@@ -1001,6 +1001,7 @@ dependencies = [
  "eframe",
  "egui-winit",
  "log",
+ "walkers",
 ]
 
 [[package]]
@@ -1011,6 +1012,7 @@ dependencies = [
  "eframe",
  "egui",
  "env_logger",
+ "walkers",
 ]
 
 [[package]]
@@ -1021,6 +1023,7 @@ dependencies = [
  "eframe",
  "egui",
  "log",
+ "walkers",
  "wasm-bindgen-futures",
  "web-sys",
 ]
@@ -2083,9 +2086,9 @@ dependencies = [
 
 [[package]]
 name = "http-body-util"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9f41fd6a08e4d4ec69df65976da761afd5ad5e58a9d4acb46bd1c953a9e3ff2"
+checksum = "23169fe34a5fbcdd3f3862e78fb9b6fccd5f02a6dc6f732547005d45631ce71c"
 dependencies = [
  "bytes",
  "futures-core",
@@ -4276,9 +4279,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.150"
+version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
+checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
  "itoa",
  "memchr",
@@ -5176,11 +5179,15 @@ name = "walkers"
 version = "0.59.0"
 dependencies = [
  "approx",
+ "bytemuck",
  "bytes",
  "color",
+ "ecolor",
  "eframe",
  "egui",
+ "egui-wgpu",
  "egui_extras",
+ "emath",
  "env_logger",
  "futures",
  "geo",
