@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+* `walkers::Geometry` is replaced by the re-exported `walkers::geo_types`.
+* `symbol` layers support `minzoom`.
+* Vector tile decoding optimizations.
+* Labels of higher style layers take precedence.
+* `symbol` layers support `text-padding`.
+
 ## 0.60.0
 
 * `egui` is now a dependency with `default-features = false`, so `walkers` no longer

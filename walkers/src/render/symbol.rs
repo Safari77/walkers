@@ -15,24 +15,46 @@ pub fn render(
     texts: &mut Vec<Text>,
     layout: &Layout,
     paint: &Option<Paint>,
+    min_zoom: Option<f32>,
+    layer: usize,
 ) -> Result<(), Error> {
     match geometry {
-        Geometry::Point(point) => {
-            label_points(std::slice::from_ref(point), context, layout, paint, texts)
-        }
-        Geometry::MultiPoint(multi_point) => {
-            label_points(&multi_point.0, context, layout, paint, texts)
-        }
+        Geometry::Point(point) => label_points(
+            std::slice::from_ref(point),
+            context,
+            layout,
+            paint,
+            min_zoom,
+            layer,
+            texts,
+        ),
+        Geometry::MultiPoint(multi_point) => label_points(
+            &multi_point.0,
+            context,
+            layout,
+            paint,
+            min_zoom,
+            layer,
+            texts,
+        ),
         Geometry::LineString(line_string) => label_line_strings(
             std::slice::from_ref(line_string),
             context,
             layout,
             paint,
+            min_zoom,
+            layer,
             texts,
         ),
-        Geometry::MultiLineString(multi_line_string) => {
-            label_line_strings(&multi_line_string.0, context, layout, paint, texts)
-        }
+        Geometry::MultiLineString(multi_line_string) => label_line_strings(
+            &multi_line_string.0,
+            context,
+            layout,
+            paint,
+            min_zoom,
+            layer,
+            texts,
+        ),
         _ => (),
     }
     Ok(())
@@ -44,6 +66,8 @@ fn label_points(
     context: &Context,
     layout: &Layout,
     paint: &Option<Paint>,
+    min_zoom: Option<f32>,
+    layer: usize,
     texts: &mut Vec<Text>,
 ) {
     let Some(text) = layout.text(context) else {
@@ -53,10 +77,14 @@ fn label_points(
     let text_size = evaluate_text_size(layout, context);
     let text_color = evaluate_text_color(paint, context);
     let (halo_color, halo_width) = evaluate_halo(paint, context);
+    let padding = evaluate_text_padding(layout, context);
 
     texts.extend(points.iter().map(|p| {
         Text::new(pos2(p.x(), p.y()), text.clone(), text_size, text_color, 0.0)
             .with_halo(halo_color, halo_width)
+            .with_min_zoom(min_zoom)
+            .with_layer(layer)
+            .with_padding(padding)
     }))
 }
 
@@ -66,6 +94,8 @@ fn label_line_strings(
     context: &Context,
     layout: &Layout,
     paint: &Option<Paint>,
+    min_zoom: Option<f32>,
+    layer: usize,
     texts: &mut Vec<Text>,
 ) {
     let Some(text) = layout.text(context) else {
@@ -75,6 +105,7 @@ fn label_line_strings(
     let text_size = evaluate_text_size(layout, context);
     let text_color = evaluate_text_color(paint, context);
     let (halo_color, halo_width) = evaluate_halo(paint, context);
+    let padding = evaluate_text_padding(layout, context);
 
     for line_string in line_strings {
         let lines: Vec<_> = line_string.lines().collect();
@@ -93,10 +124,20 @@ fn label_line_strings(
                     angle,
                 )
                 .with_halo(halo_color, halo_width)
-                .with_placement(Placement::Line),
+                .with_placement(Placement::Line)
+                .with_min_zoom(min_zoom)
+                .with_layer(layer)
+                .with_padding(padding),
             );
         }
     }
+}
+
+fn evaluate_text_padding(layout: &Layout, context: &Context) -> f32 {
+    layout
+        .text_padding
+        .as_ref()
+        .map_or(0.0, |padding| padding.evaluate(context))
 }
 
 fn evaluate_text_size(layout: &Layout, context: &Context) -> f32 {
@@ -172,11 +213,11 @@ mod tests {
 
         let layout = Layout {
             text_field: Some(crate::style::json!(["get", "name"])),
-            text_size: None,
+            ..Default::default()
         };
 
         let mut texts = Vec::new();
-        render(&geometry, &context, &mut texts, &layout, &None).unwrap();
+        render(&geometry, &context, &mut texts, &layout, &None, None, 0).unwrap();
         texts
     }
 

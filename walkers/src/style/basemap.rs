@@ -1102,10 +1102,12 @@ fn build(palette: &Palette, schema: Schema) -> Style {
         // address_label
         Layer::Symbol {
             source_layer: schema.buildings.into(),
+            minzoom: Some(18.0),
             filter: Some(Filter(json!(["==", schema.kind, "address"]))),
             layout: Layout {
                 text_field: Some(json!(["get", "addr_housenumber"])),
                 text_size: Some(Float(json!(10))),
+                ..Default::default()
             },
             paint: Some(Paint {
                 text_color: Some(Color(json!(palette.label))),
@@ -1117,10 +1119,12 @@ fn build(palette: &Palette, schema: Schema) -> Style {
         // water_waterway_label
         Layer::Symbol {
             source_layer: schema.waterway.into(),
+            minzoom: None,
             filter: Some(Filter(json!(["in", schema.kind, "river", "stream"]))),
             layout: Layout {
                 text_field: Some(json!(["get", "name"])),
                 text_size: Some(Float(json!(12))),
+                ..Default::default()
             },
             paint: Some(Paint {
                 text_color: Some(Color(json!(palette.water_label))),
@@ -1132,16 +1136,19 @@ fn build(palette: &Palette, schema: Schema) -> Style {
         // roads_oneway
         Layer::Symbol {
             source_layer: schema.road_labels.into(),
+            minzoom: None,
             filter: Some(Filter(json!(["==", ["get", "oneway"], "yes"]))),
             layout: Layout {
                 text_field: None,
                 text_size: None,
+                ..Default::default()
             },
             paint: None,
         },
         // roads_labels_minor
         Layer::Symbol {
             source_layer: schema.road_labels.into(),
+            minzoom: None,
             filter: Some(Filter(json!([
                 "in",
                 schema.kind,
@@ -1156,6 +1163,7 @@ fn build(palette: &Palette, schema: Schema) -> Style {
             layout: Layout {
                 text_field: Some(json!(["get", "name"])),
                 text_size: Some(Float(json!(12))),
+                ..Default::default()
             },
             paint: Some(Paint {
                 text_color: Some(Color(json!(palette.label_muted))),
@@ -1167,6 +1175,7 @@ fn build(palette: &Palette, schema: Schema) -> Style {
         // water_label_ocean
         Layer::Symbol {
             source_layer: schema.water_labels.into(),
+            minzoom: None,
             filter: Some(Filter(json!([
                 "in",
                 schema.kind,
@@ -1179,6 +1188,7 @@ fn build(palette: &Palette, schema: Schema) -> Style {
             layout: Layout {
                 text_field: Some(json!(["get", "name"])),
                 text_size: Some(linear_zoom_interpolation(&[(3.0, 10.0), (10.0, 12.0)])),
+                ..Default::default()
             },
             paint: Some(Paint {
                 text_color: Some(Color(json!(palette.water_label))),
@@ -1190,10 +1200,12 @@ fn build(palette: &Palette, schema: Schema) -> Style {
         // earth_label_islands
         Layer::Symbol {
             source_layer: schema.earth.into(),
+            minzoom: None,
             filter: Some(Filter(json!(["in", schema.kind, "island"]))),
             layout: Layout {
                 text_field: Some(json!(["get", "name"])),
                 text_size: Some(Float(json!(10))),
+                ..Default::default()
             },
             paint: Some(Paint {
                 text_color: Some(Color(json!(palette.label_muted))),
@@ -1205,6 +1217,7 @@ fn build(palette: &Palette, schema: Schema) -> Style {
         // water_label_lakes
         Layer::Symbol {
             source_layer: schema.water_labels.into(),
+            minzoom: None,
             filter: Some(Filter(json!(["in", schema.kind, "lake", "water"]))),
             layout: Layout {
                 text_field: Some(json!(["get", "name"])),
@@ -1213,6 +1226,7 @@ fn build(palette: &Palette, schema: Schema) -> Style {
                     (6.0, 12.0),
                     (10.0, 12.0),
                 ])),
+                ..Default::default()
             },
             paint: Some(Paint {
                 text_color: Some(Color(json!(palette.water_label))),
@@ -1224,6 +1238,7 @@ fn build(palette: &Palette, schema: Schema) -> Style {
         // roads_shields
         Layer::Symbol {
             source_layer: schema.road_labels.into(),
+            minzoom: None,
             filter: Some(Filter(json!([
                 "all",
                 [
@@ -1247,6 +1262,7 @@ fn build(palette: &Palette, schema: Schema) -> Style {
             layout: Layout {
                 text_field: Some(json!(["get", "shield_text"])),
                 text_size: Some(Float(json!(8))),
+                ..Default::default()
             },
             paint: Some(Paint {
                 text_color: Some(Color(json!(palette.label_muted))),
@@ -1256,6 +1272,7 @@ fn build(palette: &Palette, schema: Schema) -> Style {
         // roads_labels_major
         Layer::Symbol {
             source_layer: schema.road_labels.into(),
+            minzoom: None,
             filter: Some(Filter(json!([
                 "in",
                 schema.kind,
@@ -1269,6 +1286,7 @@ fn build(palette: &Palette, schema: Schema) -> Style {
             layout: Layout {
                 text_field: Some(json!(["get", "name"])),
                 text_size: Some(Float(json!(13))),
+                ..Default::default()
             },
             paint: Some(Paint {
                 text_color: Some(Color(json!(palette.label))),
@@ -1280,6 +1298,7 @@ fn build(palette: &Palette, schema: Schema) -> Style {
         // places_subplace
         Layer::Symbol {
             source_layer: schema.places.into(),
+            minzoom: None,
             filter: Some(Filter(json!([
                 "in",
                 schema.kind,
@@ -1295,6 +1314,7 @@ fn build(palette: &Palette, schema: Schema) -> Style {
                     (14.0, 14.0),
                     (18.0, 24.0),
                 ])),
+                ..Default::default()
             },
             paint: Some(Paint {
                 text_color: Some(Color(json!(palette.label_muted))),
@@ -1306,10 +1326,12 @@ fn build(palette: &Palette, schema: Schema) -> Style {
         // places_region
         Layer::Symbol {
             source_layer: schema.places.into(),
+            minzoom: None,
             filter: Some(Filter(json!(["in", schema.kind, "region", "state"]))),
             layout: Layout {
                 text_field: Some(json!(["get", "name"])),
                 text_size: Some(linear_zoom_interpolation(&[(3.0, 11.0), (7.0, 16.0)])),
+                ..Default::default()
             },
             paint: Some(Paint {
                 text_color: Some(Color(json!(palette.label))),
@@ -1321,6 +1343,7 @@ fn build(palette: &Palette, schema: Schema) -> Style {
         // places_locality
         Layer::Symbol {
             source_layer: schema.places.into(),
+            minzoom: None,
             filter: Some(Filter(json!([
                 "in",
                 schema.kind,
@@ -1332,6 +1355,12 @@ fn build(palette: &Palette, schema: Schema) -> Style {
             layout: Layout {
                 text_field: Some(json!(["get", "name"])),
                 text_size: Some(schema.settlement_text_size()),
+                // Keeps villages from packing edge to edge, the curve being Protomaps' own.
+                text_padding: Some(linear_zoom_interpolation(&[
+                    (5.0, 3.0),
+                    (8.0, 7.0),
+                    (12.0, 11.0),
+                ])),
             },
             paint: Some(Paint {
                 text_color: Some(Color(json!(palette.locality_text))),
@@ -1343,10 +1372,12 @@ fn build(palette: &Palette, schema: Schema) -> Style {
         // places_country
         Layer::Symbol {
             source_layer: schema.places.into(),
+            minzoom: None,
             filter: Some(Filter(json!(["==", schema.kind, "country"]))),
             layout: Layout {
                 text_field: Some(json!(["get", "name:en"])),
                 text_size: Some(Float(json!(18.0))),
+                ..Default::default()
             },
             paint: Some(Paint {
                 text_color: Some(Color(json!(palette.label))),
@@ -1358,10 +1389,12 @@ fn build(palette: &Palette, schema: Schema) -> Style {
         // stations
         Layer::Symbol {
             source_layer: schema.pois.into(),
+            minzoom: None,
             filter: Some(Filter(json!(["==", schema.kind, "station"]))),
             layout: Layout {
                 text_field: Some(json!(["get", "name"])),
                 text_size: Some(Float(json!(11))),
+                ..Default::default()
             },
             paint: Some(Paint {
                 text_color: Some(Color(json!(palette.station))),
@@ -1373,10 +1406,12 @@ fn build(palette: &Palette, schema: Schema) -> Style {
         // peaks
         Layer::Symbol {
             source_layer: schema.peaks.into(),
+            minzoom: None,
             filter: Some(Filter(json!(["in", schema.kind, "peak", "volcano"]))),
             layout: Layout {
                 text_field: Some(json!(["get", "name"])),
                 text_size: Some(linear_zoom_interpolation(&[(8.0, 10.0), (14.0, 14.0)])),
+                ..Default::default()
             },
             paint: Some(Paint {
                 text_color: Some(Color(json!(palette.peak))),

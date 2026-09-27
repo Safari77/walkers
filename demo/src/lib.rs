@@ -241,6 +241,7 @@ fn hiking_style() -> Style {
             },
             Layer::Symbol {
                 source_layer: "".into(),
+                minzoom: None,
                 filter: Some(Filter(json!(["==", ["get", "natural"], "peak"]))),
                 layout: Layout {
                     text_field: Some(json!(["get", "name"])),
@@ -253,6 +254,7 @@ fn hiking_style() -> Style {
                         16.0,
                         16.0
                     ]))),
+                    ..Default::default()
                 },
                 paint: Some(Paint {
                     text_color: Some(Color(json!("#3d2b1f"))),
