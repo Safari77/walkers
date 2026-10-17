@@ -1,24 +1,25 @@
+mod basemaps;
 mod kml;
 mod places;
 mod plugins;
-mod tiles;
 mod windows;
 
 use std::io;
 
-use egui::{Button, DragPanButtons, OpenUrl, Rect, Vec2};
-use tiles::{TilesKind, providers};
-use walkers::{Color, Filter, Float, Layer, Layout, Map, MapMemory, Paint, Style, json};
-use walkers_extras::GeoJsonLayer;
-
-use crate::tiles::Providers;
+use basemaps::basemaps;
+use egui::{Button, Color32, DragPanButtons, OpenUrl, PointerButton, Rect, Vec2};
+use walkers::{Color, Filter, Float, Layer, Layout, Map, MapMemory, Paint, Position, Style, json};
+use walkers_extras::{Basemaps, GeoJsonLayer, KmlLayer};
 
 pub struct MyApp {
-    providers: Providers,
+    basemaps: Basemaps,
+    #[cfg(feature = "pmtiles")]
+    have_some_pmtiles: bool,
     map_memory: MapMemory,
-    click_watcher: plugins::ClickWatcher,
+    clicked_at: Option<Position>,
     zoom_with_ctrl: bool,
     geojson_layers: Vec<GeoJsonLayer>,
+    kml_layers: Vec<KmlLayer>,
 }
 
 impl MyApp {
@@ -27,11 +28,18 @@ impl MyApp {
         egui_extras::install_image_loaders(&egui_ctx);
 
         Self {
-            providers: providers(egui_ctx.to_owned()),
+            basemaps: basemaps(egui_ctx.to_owned()),
+            #[cfg(feature = "pmtiles")]
+            have_some_pmtiles: !walkers_extras::pmtiles_files(std::path::Path::new(".")).is_empty(),
             map_memory: MapMemory::default(),
-            click_watcher: Default::default(),
-            zoom_with_ctrl: true,
+            clicked_at: None,
+            zoom_with_ctrl: false,
             geojson_layers: geojson_layers().unwrap_or_default(),
+            kml_layers: vec![
+                kml::kampinos_national_park(),
+                kml::high_speed_rail_poland(),
+                kml::outgym_umea_layer(),
+            ],
         }
     }
 }
@@ -40,16 +48,6 @@ impl eframe::App for MyApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // Typically this would be a GPS acquired position which is tracked by the map.
         let my_position = places::wroclaw_glowny();
-
-        let tiles = self
-            .providers
-            .available
-            .get_mut(&self.providers.selected)
-            .unwrap();
-        let attributions: Vec<_> = tiles
-            .iter()
-            .map(|tile| tile.as_ref().attribution())
-            .collect();
 
         // In egui, widgets are constructed and consumed in each frame.
         let mut map = Map::new(None, &mut self.map_memory, my_position);
@@ -60,27 +58,46 @@ impl eframe::App for MyApp {
             .drag_pan_buttons(DragPanButtons::PRIMARY | DragPanButtons::SECONDARY);
 
         // Optionally, plugins can be attached.
-        map = map
-            .with_plugin(plugins::places())
-            .with_plugin(plugins::CustomShapes {})
-            .with_plugin(&mut self.click_watcher)
-            .with_plugin(kml::poland_borders())
-            .with_plugin(kml::outgym_umea_layer());
+        map = map.with_plugin(plugins::places());
 
-        // Multiple layers can be added.
-        for (n, tiles) in tiles.iter_mut().enumerate() {
-            // With a different transparency.
-            let transparency = if n == 0 { 1.0 } else { 0.25 };
-            map = map.with_layer(tiles.as_mut(), transparency);
-        }
+        // Tile layers of the selected basemap.
+        map = self.basemaps.add_to(map);
 
         // Draw the map widget.
-        let response = map.show(ui, |ui, _, projector, map_memory| {
-            for layer in &self.geojson_layers {
-                layer.render(ui, projector, map_memory.zoom().round() as u8);
+        let response = map.show(ui, |ui, response, projector, map_memory| {
+            let zoom = map_memory.zoom().round() as u8;
+
+            for layer in &self.kml_layers {
+                layer.render(ui, projector, zoom);
             }
 
-            // You can add any additional contents to the map's UI here.
+            for layer in &self.geojson_layers {
+                layer.render(ui, projector, zoom);
+            }
+
+            // You can add any additional contents to the map's UI here, like remembering where
+            // the map was clicked...
+            if !response.changed() && response.clicked_by(PointerButton::Primary) {
+                self.clicked_at = response
+                    .interact_pointer_pos()
+                    .map(|position| projector.unproject(position.to_vec2()));
+            }
+
+            // ...drawing shapes which react to the mouse...
+            if let Some(clicked_at) = self.clicked_at {
+                let center = projector.project(clicked_at).to_pos2();
+                let radius = 5.0;
+                let hovered = response
+                    .hover_pos()
+                    .is_some_and(|hover_pos| hover_pos.distance(center) < radius);
+                ui.painter().circle_filled(
+                    center,
+                    if hovered { 2.0 * radius } else { radius },
+                    Color32::BLUE,
+                );
+            }
+
+            // ...or putting widgets on it.
             let bastion = projector.project(places::bastion_sakwowy()).to_pos2();
             ui.put(
                 Rect::from_center_size(bastion, Vec2::new(140., 20.)),
@@ -102,21 +119,8 @@ impl eframe::App for MyApp {
 
             zoom(ui, &mut self.map_memory);
             go_to_my_position(ui, &mut self.map_memory);
-            self.click_watcher.show_position(ui);
-
-            let http_stats = tiles
-                .iter()
-                .filter_map(|tiles| {
-                    if let TilesKind::Http(tiles) = tiles {
-                        Some(tiles.stats())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            controls(self, ui, http_stats, _frame);
-            acknowledge(ui, attributions);
+            controls(self, ui, _frame);
+            acknowledge(ui, self.basemaps.attributions());
         }
     }
 }

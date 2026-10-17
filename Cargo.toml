@@ -12,7 +12,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.60.0"
+version = "0.63.0"
 edition = "2024"
 rust-version = "1.95"                                # Aligned to egui
 repository = "https://github.com/podusowski/walkers"
@@ -21,8 +21,8 @@ keywords = ["geography", "gis", "gui"]
 categories = ["gui", "science::geo"]
 
 [workspace.dependencies]
-walkers = { path = "walkers", version = "0.60.0" }
-walkers_extras = { path = "walkers_extras", version = "0.60.0" }
+walkers = { path = "walkers", version = "0.63.0" }
+walkers_extras = { path = "walkers_extras", version = "0.63.0" }
 
 android_logger = "0.15.1"
 approx = "0.5.1"
@@ -30,13 +30,13 @@ bytemuck = { version = "1.25", features = ["derive"] }
 bytes = "1.12"
 color = { version = "0.3.3", features = ["serde"] }
 criterion = "0.8.2"
-eframe = "0.36.0"
-ecolor = "0.36.0"
-egui = { version = "0.36.0", default-features = false }
-egui-wgpu = "0.36.0"
-emath = "0.36.0"
-egui_extras = { version = "0.36.0", features = ["svg"] }
-egui-winit = "0.36.0"
+eframe = "0.37.0"
+ecolor = "0.37.0"
+egui = { version = "0.37.0", default-features = false }
+egui-wgpu = "0.37.0"
+emath = "0.37.0"
+egui_extras = { version = "0.37.0", features = ["svg"] }
+egui-winit = "0.37.0"
 env_logger = "0.11.11"
 futures = "0.3.33"
 geo = { version = "0.33.1", default-features = false }
@@ -53,7 +53,7 @@ http-cache-reqwest = { version = "1.0.0-alpha.9", default-features = false, feat
 hyper = { version = "1.11", features = ["full"] }
 hyper-util = { version = "0.1.20", features = ["full"] }
 image = { version = "0.25.10", default-features = false }
-kml = { version = "0.14.0", default-features = false }
+kml = { version = "0.14.0", default-features = false, features = ["geo-types"] }
 log = "0.4.33"
 lru = "0.18.1"
 lyon_path = "1.0"
@@ -62,7 +62,7 @@ mvt-reader = "2.4"
 pmtiles = { version = "0.24.0", default-features = false, features = [
   "mmap-async-tokio",
 ] }
-quick-xml = "0.41.0"
+quick-xml = "0.42.0"
 rand = { version = "0.10.2", features = ["std_rng"] } # StdRng
 reqwest = { version = "0.13.5", default-features = false, features = [
   "rustls",
@@ -70,6 +70,8 @@ reqwest = { version = "0.13.5", default-features = false, features = [
   "system-proxy",
 ] }
 reqwest-middleware = "0.5.2"
+# Must be the version reqwest uses, or it will not recognize the `ClientConfig` in `HttpOptions`.
+rustls = { version = "0.23", default-features = false }
 rstar = "0.13.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

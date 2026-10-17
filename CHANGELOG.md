@@ -4,12 +4,38 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+* `concat` and `to-string` expressions are supported.
+
+## 0.63.0
+
+* `egui` updated to 0.37.
+
+## 0.62.0
+
+* The deprecated `LocalTiles` is removed. Use `PmTiles` with a local `.pmtiles` file.
+* New `OpenTopoMap` tile source.
+* `KmlLayer` draws `line` and `fill` layers with their paint, instead of hardcoded colors.
+* `render_line` and `render_fill` draw what is inside a `GeometryCollection`, so `GeoJsonLayer`
+  draws collections too.
+* `KmlLayer` is no longer a `Plugin`. Like `GeoJsonLayer`, it is built once and drawn with
+  `render(ui, projector, zoom)` each frame.
+* `Tiles::stats` reports the tiles being loaded, for any kind of tiles. `HttpTiles::stats` moved
+  there, so `Tiles` has to be in scope to call it.
+* New `walkers_extras::Basemaps`, which keeps named stacks of tile layers and builds only the
+  selected one.
+
+## 0.61.0
+
 * `walkers::Geometry` is replaced by the re-exported `walkers::geo_types`.
 * `symbol` layers support `minzoom`.
 * Vector tile decoding optimizations.
 * Labels of higher style layers take precedence.
 * `symbol` layers support `text-padding`.
 * `interpolate` supports `exponential`.
+* Dashed lines keep their length when zooming, instead of stretching with the tile.
+* `HttpOptions::tls` sets the TLS configuration, e.g. to trust a fixed set of roots instead of
+  the platform's trust store.
+* `PmTiles` renders tiles at 512px by default instead of 1024px.
 
 ## 0.60.0
 
